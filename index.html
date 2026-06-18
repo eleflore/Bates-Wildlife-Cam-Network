@@ -320,7 +320,7 @@ if (SUPABASE_URL.startsWith("YOUR_") || SUPABASE_ANON_KEY.startsWith("YOUR_")) {
   throw new Error("Supabase not configured - see config-notice");
 }
 
-const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ── STATE ─────────────────────────────────────────────────────────────
 let currentPartnerRecord = null; // row from `partners` table
@@ -341,7 +341,7 @@ async function doLogin() {
   btn.disabled = true;
   btn.textContent = 'Signing in…';
 
-  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
 
   btn.disabled = false;
   btn.textContent = 'Sign in';
@@ -359,14 +359,14 @@ async function doLogin() {
 
 async function onLoggedIn() {
   // Look up this user's partner record (tells us their org name / admin status)
-  const { data: partnerRows, error } = await supabase
+  const { data: partnerRows, error } = await supabaseClient
     .from('partners')
     .select('*')
     .limit(1);
 
   if (error || !partnerRows || partnerRows.length === 0) {
     alert('Your account is not yet linked to a partner organization. Please contact the site administrator.');
-    await supabase.auth.signOut();
+    await supabaseClient.auth.signOut();
     return;
   }
 
@@ -377,7 +377,7 @@ async function onLoggedIn() {
 }
 
 async function doLogout() {
-  await supabase.auth.signOut();
+  await supabaseClient.auth.signOut();
   currentPartnerRecord = null;
   mySites = [];
   document.getElementById('app').style.display = 'none';
@@ -389,7 +389,7 @@ async function doLogout() {
 
 // Restore session on page reload (so partners aren't logged out every refresh)
 (async function checkExistingSession() {
-  const { data } = await supabase.auth.getSession();
+  const { data } = await supabaseClient.auth.getSession();
   if (data.session) {
     await onLoggedIn();
   }
@@ -405,7 +405,7 @@ async function loadDashboard() {
   document.getElementById('admin-notice').style.display = isAdmin ? 'flex' : 'none';
 
   // RLS automatically filters this to only the logged-in partner's sites
-  const { data: sites, error } = await supabase
+  const { data: sites, error } = await supabaseClient
     .from('sites')
     .select('*')
     .order('station_number');
@@ -448,7 +448,7 @@ function renderStats() {
 async function loadTotalPhotoCount() {
   const stationNumbers = mySites.map(s => s.station_number);
   if (stationNumbers.length === 0) return;
-  const { count, error } = await supabase
+  const { count, error } = await supabaseClient
     .from('detections')
     .select('*', { count: 'exact', head: true })
     .in('station_number', stationNumbers);
@@ -514,7 +514,7 @@ async function openSiteModal(stationNumber) {
   document.getElementById('modal-overlay').classList.add('open');
 
   // Fetch all species-level detections for this site
-  const { data: detections, error } = await supabase
+  const { data: detections, error } = await supabaseClient
     .from('detections')
     .select('common_name, count, timestamp')
     .eq('station_number', stationNumber)
@@ -543,7 +543,7 @@ async function openSiteModal(stationNumber) {
   const fmt = (d) => d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
   // Total independent photo count (includes non-species rows like blanks)
-  const { count: totalPhotos } = await supabase
+  const { count: totalPhotos } = await supabaseClient
     .from('detections')
     .select('*', { count: 'exact', head: true })
     .eq('station_number', stationNumber);
@@ -619,3 +619,4 @@ function closeModal() {
 </script>
 </body>
 </html>
+
