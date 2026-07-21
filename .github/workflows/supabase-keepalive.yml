@@ -1,0 +1,24 @@
+name: Supabase Keep-Alive
+
+# Runs every 3 days, plus you can trigger it manually from the
+# Actions tab in GitHub any time you want to test it.
+on:
+  schedule:
+    - cron: "0 14 */3 * *"   # 14:00 UTC, every 3rd day
+  workflow_dispatch: {}
+
+jobs:
+  ping-supabase:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Call Supabase keepalive function
+        run: |
+          curl -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/keepalive_ping" \
+            -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
+            -H "Content-Type: application/json" \
+            -H "x-client-info: keepalive-action" \
+            --fail --silent --show-error \
+            -d '{}'
+          echo ""
+          echo "Keep-alive ping sent successfully."
