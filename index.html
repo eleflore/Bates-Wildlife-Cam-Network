@@ -181,7 +181,8 @@
     padding: 6px 12px; font-size: 0.8rem; cursor: pointer; margin-top: 6px; font-family: 'DM Sans', sans-serif;
   }
   .map-popup-name { font-weight: 600; color: var(--forest); margin-bottom: 2px; }
-  .map-popup-partner { font-size: 0.75rem; color: var(--smoke); margin-bottom: 6px; }
+  .map-popup-partner { font-size: 0.75rem; color: var(--smoke); margin-bottom: 2px; }
+  .map-popup-year { font-size: 0.72rem; color: var(--bark); font-weight: 600; letter-spacing: 0.03em; margin-bottom: 6px; }
 
   @media (max-width: 600px) {
     main { padding: 1.5rem 1rem; }
@@ -256,7 +257,7 @@
         <h2 id="page-title">Your Camera Sites</h2>
         <p id="page-subtitle"></p>
       </div>
-      <span class="season-badge">Academic Year 2024–25</span>
+      <span class="season-badge" id="season-badge"></span>
     </div>
 
     <div id="admin-notice" class="admin-notice" style="display:none">
@@ -320,13 +321,33 @@ if (SUPABASE_URL.startsWith("YOUR_") || SUPABASE_ANON_KEY.startsWith("YOUR_")) {
   throw new Error("Supabase not configured - see config-notice");
 }
 
-const supabaseClient = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
 
 // ── STATE ─────────────────────────────────────────────────────────────
 let currentPartnerRecord = null; // row from `partners` table
 let mySites = [];
+let allSites = [];       // all years, used to build map with all pins
 let leafletMap = null;
 let markerLayer = null;
+
+// ── SPECIES FILTER ────────────────────────────────────────────────────
+// Excludes non-identified detections: blanks, unknowns, broad taxonomic
+// categories, humans, and vehicles. Everything else is a valid species ID.
+const EXCLUDED_NAMES = new Set([
+  'Animal', 'Bird', 'Blank', 'Mammal', 'Rodent', 'Small Mammal',
+  'Unknown', 'No CV Result',
+  // Broad taxonomic categories
+  'Canine Family', 'Canis Species', 'Carnivorous Mammal', 'Cat Family',
+  'Cervidae Family', 'Cetartiodactyla Order', 'Cricetidae Family',
+  'Galliformes Order', 'Glaucomys Species', 'Homo Species', 'Mouse species',
+  'Odocoileus Species', 'Owl', 'Passeriformes Order', 'Procyon Species',
+  'Rabbit and Hare Family', 'Sciuridae Family', 'Sciurus Species',
+  'Weasel Family', 'Weasel Species', 'Woodrat or Rat Species',
+  // Humans
+  'Human', 'Human-Maintenance crew', 'Human-Pedestrian', 'Human-Resident',
+  // Non-wildlife
+  'Vehicle', 'Dog-on-leash'
+]);
 
 // ── LOGIN ─────────────────────────────────────────────────────────────
 document.getElementById('password').addEventListener('keydown', e => { if (e.key === 'Enter') doLogin(); });
@@ -341,7 +362,7 @@ async function doLogin() {
   btn.disabled = true;
   btn.textContent = 'Signing in…';
 
-  const { data, error } = await supabaseClient.auth.signInWithPassword({ email, password });
+  const { data, error } = await supabase.auth.signInWithPassword({ email, password });
 
   btn.disabled = false;
   btn.textContent = 'Sign in';
@@ -359,14 +380,14 @@ async function doLogin() {
 
 async function onLoggedIn() {
   // Look up this user's partner record (tells us their org name / admin status)
-  const { data: partnerRows, error } = await supabaseClient
+  const { data: partnerRows, error } = await supabase
     .from('partners')
     .select('*')
     .limit(1);
 
   if (error || !partnerRows || partnerRows.length === 0) {
     alert('Your account is not yet linked to a partner organization. Please contact the site administrator.');
-    await supabaseClient.auth.signOut();
+    await supabase.auth.signOut();
     return;
   }
 
@@ -377,7 +398,7 @@ async function onLoggedIn() {
 }
 
 async function doLogout() {
-  await supabaseClient.auth.signOut();
+  await supabase.auth.signOut();
   currentPartnerRecord = null;
   mySites = [];
   document.getElementById('app').style.display = 'none';
@@ -389,7 +410,7 @@ async function doLogout() {
 
 // Restore session on page reload (so partners aren't logged out every refresh)
 (async function checkExistingSession() {
-  const { data } = await supabaseClient.auth.getSession();
+  const { data } = await supabase.auth.getSession();
   if (data.session) {
     await onLoggedIn();
   }
@@ -404,10 +425,13 @@ async function loadDashboard() {
   document.getElementById('page-title').textContent = isAdmin ? 'All Camera Stations' : currentPartnerRecord.partner_name;
   document.getElementById('admin-notice').style.display = isAdmin ? 'flex' : 'none';
 
-  // RLS automatically filters this to only the logged-in partner's sites
-  const { data: sites, error } = await supabaseClient
+  // Fetch all sites across all years — RLS still applies so partners only
+  // see their own. All pins are shown on the map simultaneously; survey_year
+  // is displayed inside each pin's detail modal rather than as a filter.
+  const { data: sites, error } = await supabase
     .from('sites')
     .select('*')
+    .order('survey_year')
     .order('station_number');
 
   if (error) {
@@ -416,9 +440,17 @@ async function loadDashboard() {
     return;
   }
 
+  allSites = sites;
   mySites = sites;
+
+  // Unique station count (station 14 and 16 appear twice due to redeployment)
+  const uniqueStations = new Set(mySites.map(s => s.station_number)).size;
+  const years = [...new Set(mySites.map(s => s.survey_year).filter(Boolean))].sort();
+  const yearLabel = years.length > 1 ? `${years[0]} & ${years[years.length-1]}` : (years[0] || '');
+
   document.getElementById('page-subtitle').textContent =
-    `${mySites.length} station${mySites.length !== 1 ? 's' : ''} · Academic Year 2024–25`;
+    `${uniqueStations} station${uniqueStations !== 1 ? 's' : ''} · ${yearLabel}`;
+  document.getElementById('season-badge').textContent = yearLabel;
 
   renderStats();
   renderMap();
@@ -426,10 +458,12 @@ async function loadDashboard() {
 
 function renderStats() {
   const grid = document.getElementById('stats-grid');
+  // Sum trap nights across all deployments (including redeployments of same station)
   const totalTrapNights = mySites.reduce((a, s) => a + (s.trap_nights || 0), 0);
+  const uniqueStations = new Set(mySites.map(s => s.station_number)).size;
   grid.innerHTML = `
     <div class="stat-card">
-      <div class="stat-value">${mySites.length}</div>
+      <div class="stat-value">${uniqueStations}</div>
       <div class="stat-label">Camera Stations</div>
     </div>
     <div class="stat-card amber">
@@ -438,22 +472,24 @@ function renderStats() {
     </div>
     <div class="stat-card bark">
       <div class="stat-value" id="stat-total-photos">…</div>
-      <div class="stat-label">Total Independent Photos</div>
+      <div class="stat-label">Total Species Detections</div>
     </div>
   `;
-  // Fill in total photo count async (one lightweight count query)
-  loadTotalPhotoCount();
+  loadTotalSpeciesCount();
 }
 
-async function loadTotalPhotoCount() {
-  const stationNumbers = mySites.map(s => s.station_number);
+async function loadTotalSpeciesCount() {
+  // Count only identified species detections across all this partner's stations
+  const stationNumbers = [...new Set(mySites.map(s => s.station_number))];
   if (stationNumbers.length === 0) return;
-  const { count, error } = await supabaseClient
+  const { data, error } = await supabase
     .from('detections')
-    .select('*', { count: 'exact', head: true })
+    .select('common_name')
     .in('station_number', stationNumbers);
   const el = document.getElementById('stat-total-photos');
-  if (el) el.textContent = error ? '—' : count.toLocaleString();
+  if (error || !data) { if (el) el.textContent = '—'; return; }
+  const speciesCount = data.filter(d => !EXCLUDED_NAMES.has(d.common_name)).length;
+  if (el) el.textContent = speciesCount.toLocaleString();
 }
 
 // ── MAP ───────────────────────────────────────────────────────────────
@@ -487,10 +523,13 @@ function renderMap() {
   const bounds = [];
   mySites.forEach(s => {
     const marker = L.marker([s.lat, s.lon], { icon: cameraIcon });
+    // Pass both station_number and survey_year so the modal loads the right deployment
+    const safeYear = encodeURIComponent(s.survey_year || '');
     marker.bindPopup(`
       <div class="map-popup-name">${s.site_name}</div>
       <div class="map-popup-partner">${s.partner}</div>
-      <button class="map-popup-btn" onclick="openSiteModal(${s.station_number})">View site details</button>
+      <div class="map-popup-year">${s.survey_year || ''}</div>
+      <button class="map-popup-btn" onclick="openSiteModal(${s.station_number}, '${safeYear}')">View site details</button>
     `);
     markerLayer.addLayer(marker);
     bounds.push([s.lat, s.lon]);
@@ -503,35 +542,51 @@ function renderMap() {
 // ── SITE DETAIL MODAL ────────────────────────────────────────────────
 let speciesPieChart = null;
 
-async function openSiteModal(stationNumber) {
-  const site = mySites.find(s => s.station_number === stationNumber);
+async function openSiteModal(stationNumber, encodedYear) {
+  const surveyYear = encodedYear ? decodeURIComponent(encodedYear) : null;
+
+  // Find the specific deployment row matching station + year
+  const site = mySites.find(s =>
+    s.station_number === stationNumber &&
+    (!surveyYear || s.survey_year === surveyYear)
+  );
   if (!site) return;
 
   document.getElementById('modal-partner').textContent = site.partner;
-  document.getElementById('modal-site-name').textContent = site.site_name;
+  document.getElementById('modal-site-name').textContent =
+    `${site.site_name}${surveyYear ? ' · ' + surveyYear : ''}`;
   document.getElementById('modal-body').innerHTML =
     `<div class="loading-state"><div class="loading-spinner"></div>Loading site data…</div>`;
   document.getElementById('modal-overlay').classList.add('open');
 
-  // Fetch all species-level detections for this site
-  const { data: detections, error } = await supabaseClient
+  // Fetch all detections for this station + year, then filter client-side
+  // by EXCLUDED_NAMES (replaces the old is_species column filter)
+  let query = supabase
     .from('detections')
-    .select('common_name, count, timestamp')
-    .eq('station_number', stationNumber)
-    .eq('is_species', true);
+    .select('common_name, timestamp')
+    .eq('station_number', stationNumber);
+
+  if (surveyYear) {
+    query = query.eq('survey_year', surveyYear);
+  }
+
+  const { data: allDetections, error } = await query;
 
   if (error) {
-    document.getElementById('modal-body').innerHTML = `<div class="empty-state">Couldn't load detections: ${error.message}</div>`;
+    document.getElementById('modal-body').innerHTML =
+      `<div class="empty-state">Couldn't load detections: ${error.message}</div>`;
     return;
   }
 
-  // Aggregate species counts
+  // Split into identified species and total (for photo count stat)
+  const totalPhotos = allDetections.length;
+  const speciesDetections = allDetections.filter(d => !EXCLUDED_NAMES.has(d.common_name));
+
+  // Aggregate species counts and find date range from species detections
   const speciesTotals = {};
-  let totalDetectionEvents = 0;
   let minDate = null, maxDate = null;
-  detections.forEach(d => {
-    speciesTotals[d.common_name] = (speciesTotals[d.common_name] || 0) + (d.count || 1);
-    totalDetectionEvents++;
+  speciesDetections.forEach(d => {
+    speciesTotals[d.common_name] = (speciesTotals[d.common_name] || 0) + 1;
     if (d.timestamp) {
       const t = new Date(d.timestamp);
       if (!minDate || t < minDate) minDate = t;
@@ -540,36 +595,45 @@ async function openSiteModal(stationNumber) {
   });
 
   const sortedSpecies = Object.entries(speciesTotals).sort((a, b) => b[1] - a[1]);
-  const fmt = (d) => d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
+  const fmt = d => d ? d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' }) : '—';
 
-  // Total independent photo count (includes non-species rows like blanks)
-  const { count: totalPhotos } = await supabaseClient
-    .from('detections')
-    .select('*', { count: 'exact', head: true })
-    .eq('station_number', stationNumber);
+  // Use deployment dates from sites table if detection timestamps are absent
+  const deployedFmt = site.date_deployed
+    ? new Date(site.date_deployed).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : '—';
+  const retrievedFmt = site.date_retrieved
+    ? new Date(site.date_retrieved).toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })
+    : 'Active';
+  const dateRange = minDate ? `${fmt(minDate)} – ${fmt(maxDate)}` : `${deployedFmt} – ${retrievedFmt}`;
 
   document.getElementById('modal-body').innerHTML = `
     <div class="modal-stats">
       <div class="modal-stat">
-        <div class="v">${fmt(minDate)} – ${fmt(maxDate)}</div>
+        <div class="v">${dateRange}</div>
         <div class="l">Deployment Date Range</div>
       </div>
       <div class="modal-stat amber">
-        <div class="v">${site.trap_nights}</div>
+        <div class="v">${site.trap_nights || '—'}</div>
         <div class="l">Trap Nights</div>
       </div>
       <div class="modal-stat">
-        <div class="v">${(totalPhotos || 0).toLocaleString()}</div>
+        <div class="v">${totalPhotos.toLocaleString()}</div>
         <div class="l">Total Independent Photos</div>
+      </div>
+      <div class="modal-stat">
+        <div class="v">${speciesDetections.length.toLocaleString()}</div>
+        <div class="l">Species Detections</div>
       </div>
     </div>
     <div class="modal-grid">
       <div>
         <div class="modal-section-title">Species Detected</div>
         <table class="species-table">
-          <thead><tr><th>Species</th><th style="text-align:right">Count</th></tr></thead>
+          <thead><tr><th>Species</th><th style="text-align:right">Detections</th></tr></thead>
           <tbody>
-            ${sortedSpecies.map(([name, count]) => `<tr><td>${name}</td><td class="num">${count.toLocaleString()}</td></tr>`).join('') || '<tr><td colspan="2">No species detections recorded</td></tr>'}
+            ${sortedSpecies.map(([name, cnt]) =>
+              `<tr><td>${name}</td><td class="num">${cnt.toLocaleString()}</td></tr>`
+            ).join('') || '<tr><td colspan="2">No identified species detections recorded</td></tr>'}
           </tbody>
         </table>
       </div>
@@ -619,4 +683,3 @@ function closeModal() {
 </script>
 </body>
 </html>
-
