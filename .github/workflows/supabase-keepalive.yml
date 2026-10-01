@@ -1,24 +1,26 @@
 name: Supabase Keep-Alive
 
-# Runs every 3 days, plus you can trigger it manually from the
-# Actions tab in GitHub any time you want to test it.
+# Runs every 2 days, plus you can trigger it manually from the
+# Actions tab any time you want to test it.
 on:
   schedule:
-    - cron: "0 14 */3 * *"   # 14:00 UTC, every 3rd day
+    - cron: "0 14 */2 * *"   # 14:00 UTC, every 2nd day
   workflow_dispatch: {}
 
 jobs:
   ping-supabase:
     runs-on: ubuntu-latest
     steps:
-      - name: Call Supabase keepalive function
+      - name: Query Supabase database to prevent inactivity pause
         run: |
-          curl -X POST "${{ secrets.SUPABASE_URL }}/rest/v1/rpc/keepalive_ping" \
+          RESPONSE=$(curl -s -o /dev/null -w "%{http_code}" \
+            "${{ secrets.SUPABASE_URL }}/rest/v1/sites?select=count&limit=1" \
             -H "apikey: ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}" \
-            -H "Content-Type: application/json" \
-            -H "x-client-info: keepalive-action" \
-            --fail --silent --show-error \
-            -d '{}'
-          echo ""
-          echo "Keep-alive ping sent successfully."
+            -H "Authorization: Bearer ${{ secrets.SUPABASE_ANON_KEY }}")
+          echo "Response code: $RESPONSE"
+          if [ "$RESPONSE" = "200" ] || [ "$RESPONSE" = "206" ]; then
+            echo "Keep-alive ping successful."
+          else
+            echo "Unexpected response code: $RESPONSE"
+            exit 1
+          fi
